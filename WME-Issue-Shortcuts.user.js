@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Issue Shortcuts
 // @namespace    https://github.com/
-// @version      1.0.1-beta.3
+// @version      1.0.1-beta.4
 // @description  Creates links for one.network URLs on MPs and adds keyboard shortcuts for MPs, URs, PURs, and MS.
 // @author       Thynamelessone
 // @match        https://www.waze.com/*editor*
@@ -41,9 +41,10 @@
     const URL_REGEX_MATCH = /https?:\/\/(?:[a-zA-Z0-9-]+\.)?one\.network\/[^\s<"'`;,]+/gi;
 
     const TAB_TARGET_NAME = 'one_network_shared_tab';
+    const SHORTCUT_STORAGE_KEY = `${SCRIPT_ID}-saved-shortcuts`;
+
     let sharedWindowRef = null;
     let sdk = null;
-    let currentURId = null;
 
     let currentActiveSelection = { type: null, id: null };
 
@@ -129,26 +130,6 @@
         ];
 
         selectors.forEach(processContainer);
-    }
-
-    function findAndClickButton(matchTexts, containerSelector = null) {
-        const context = containerSelector 
-            ? document.querySelector(containerSelector) 
-            : document;
-
-        if (!context) return false;
-
-        const btn = Array.from(context.querySelectorAll('button, .btn, wz-button'))
-            .find(b => {
-                const txt = (b.textContent || b.innerText || '').trim().toLowerCase();
-                return matchTexts.some(target => txt === target.toLowerCase() || txt.includes(target.toLowerCase()));
-            });
-
-        if (btn && typeof btn.click === 'function') {
-            btn.click();
-            return true;
-        }
-        return false;
     }
 
     function handleUnifiedAction(actionType) {
@@ -270,7 +251,26 @@
         }
     }
 
-    const SHORTCUT_STORAGE_KEY = `${SCRIPT_ID}-saved-shortcuts`;
+    function parseSdkKeysToString(rawKeys) {
+        if (!rawKeys) return null;
+        if (typeof rawKeys === 'string' && !/^\d+,-?\d+$/.test(rawKeys)) {
+            return rawKeys;
+        }
+        const match = /^(\d+),(-?\d+)$/.exec(String(rawKeys));
+        if (!match) return String(rawKeys);
+
+        const mask = Number(match[1]);
+        const key = Number(match[2]);
+        if (key < 0) return null;
+
+        const mods = [
+            mask & 4 ? 'A' : '',
+            mask & 1 ? 'C' : '',
+            mask & 2 ? 'S' : '',
+        ].join('');
+
+        return mods ? `${mods}+${key}` : String(key);
+    }
 
     function getStoredShortcutKeys() {
         try {
@@ -288,7 +288,7 @@
 
             currentShortcuts.forEach(sc => {
                 if (sc.shortcutId && sc.shortcutId.startsWith(SCRIPT_ID)) {
-                    savedState[sc.shortcutId] = sc.shortcutKeys;
+                    savedState[sc.shortcutId] = parseSdkKeysToString(sc.shortcutKeys);
                 }
             });
 
@@ -304,18 +304,17 @@
         registerShortcut({
             shortcutId: SHORTCUT_IDS.solve,
             description: "Solve MP / UR / PUR / MS",
-            shortcutKeys: storedKeys[SHORTCUT_IDS.solve] ?? DEFAULT_SHORTCUTS.solve,
+            shortcutKeys: parseSdkKeysToString(storedKeys[SHORTCUT_IDS.solve]) ?? DEFAULT_SHORTCUTS.solve,
             callback: () => handleUnifiedAction('solve'),
         });
 
         registerShortcut({
             shortcutId: SHORTCUT_IDS.notApplicable,
             description: "Not Applicable / Reject MP / UR / PUR / MS",
-            shortcutKeys: storedKeys[SHORTCUT_IDS.notApplicable] ?? DEFAULT_SHORTCUTS.notApplicable,
+            shortcutKeys: parseSdkKeysToString(storedKeys[SHORTCUT_IDS.notApplicable]) ?? DEFAULT_SHORTCUTS.notApplicable,
             callback: () => handleUnifiedAction('notApplicable'),
         });
 
-        // Save key bindings whenever the page unloads or hides
         window.addEventListener('beforeunload', saveShortcutKeys);
         window.addEventListener('pagehide', saveShortcutKeys);
     }
