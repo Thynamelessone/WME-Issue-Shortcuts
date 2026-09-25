@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Issue Shortcuts
 // @namespace    https://github.com/
-// @version      1.0.1-beta.1
+// @version      1.0.1-beta.2
 // @description  Creates links for one.network URLs on MPs and adds keyboard shortcuts for MPs, URs, PURs, and MS.
 // @author       Thynamelessone
 // @match        https://www.waze.com/*editor*
@@ -149,71 +149,90 @@
         return false;
     }
 
-    function handleUnifiedSolve() {
-        // 1. Map Problems (MP)
-        if (findAndClickButton(['solved', 'solve'], '.map-problem-detail, .modal-content, [class*="problem"]')) {
+    function handleUnifiedAction(actionType) {
+        const W = typeof window !== "undefined" ? window.W : undefined;
+        const { type, id } = currentActiveSelection;
+
+        if (!type || !id) {
+            console.debug(`[${SCRIPT_NAME}] No active selection detected.`);
             return;
         }
 
-        // 2. Place Update Requests (PUR)
-        if (findAndClickButton(['approve', 'accept'], '.venue-update-request, [class*="venue-update"], [data-testid*="pur"]')) {
-            return;
-        }
+        const isSolve = actionType === 'solve';
 
-        // 3. Map Suggestions (MS)
-        if (findAndClickButton(['apply', 'approve', 'accept'], '.suggestion-detail, [class*="suggestion"], [class*="map-suggestion"]')) {
-            return;
-        }
+        switch (type) {
+            // 1. Update Requests (UR)
+            case 'mapUpdateRequest':
+            case 'ur':
+                if (sdk?.DataModel?.MapUpdateRequests) {
+                    sdk.DataModel.MapUpdateRequests.updateResolutionState({
+                        mapUpdateRequestId: id,
+                        resolutionState: isSolve ? 'solved' : 'not-identified',
+                    });
+                }
+                break;
 
-        // 4. Fallback Generic Button Search for MP/PUR/MS
-        if (findAndClickButton(['solved', 'approve', 'accept'])) {
-            return;
-        }
+            // 2. Map Problems (MP)
+            case 'mapProblem':
+            case 'mp':
+            case 'problem':
+                if (sdk?.DataModel?.MapProblems?.updateProblemState) {
+                    sdk.DataModel.MapProblems.updateProblemState({
+                        problemId: id,
+                        state: isSolve ? 'SOLVED' : 'NOT_APPLICABLE'
+                    });
+                } else if (W?.model?.problems) {
+                    const problem = W.model.problems.getObjectById(id) || W.model.problems.objects[id];
+                    if (problem) {
+                        const req = typeof require === "function" ? require : window.require;
+                        let UpdateProblemState = W?.Action?.UpdateProblemState || (typeof req === "function" ? req("Waze/Action/UpdateProblemState") : null);
+                        if (UpdateProblemState) {
+                            W.model.actionManager.add(new UpdateProblemState(problem, isSolve ? 'SOLVED' : 'NOT_APPLICABLE'));
+                        }
+                    }
+                }
+                break;
 
-        // 5. Update Requests (UR) via WME SDK
-        if (currentURId && sdk?.DataModel?.MapUpdateRequests) {
-            try {
-                sdk.DataModel.MapUpdateRequests.updateResolutionState({
-                    mapUpdateRequestId: currentURId,
-                    resolutionState: 'solved',
-                });
-            } catch (e) {
-                console.error(`[${SCRIPT_NAME}] Failed to mark UR as solved:`, e);
-            }
-        }
-    }
+            // 3. Place Update Requests (PUR)
+            case 'venueUpdateRequest':
+            case 'pur':
+                if (sdk?.DataModel?.VenueUpdateRequests) {
+                    if (isSolve) {
+                        sdk.DataModel.VenueUpdateRequests.accept({ venueUpdateRequestId: id });
+                    } else {
+                        sdk.DataModel.VenueUpdateRequests.reject({ venueUpdateRequestId: id });
+                    }
+                } else if (W?.model?.venueUpdateRequests) {
+                    const pur = W.model.venueUpdateRequests.getObjectById(id) || W.model.venueUpdateRequests.objects[id];
+                    if (pur) {
+                        if (isSolve) pur.accept();
+                        else pur.reject();
+                    }
+                }
+                break;
 
-    function handleUnifiedNotApplicable() {
-        // 1. Map Problems (MP)
-        if (findAndClickButton(['not applicable', 'not_applicable'], '.map-problem-detail, .modal-content, [class*="problem"]')) {
-            return;
-        }
+            // 4. Map Suggestions (MS)
+            case 'mapSuggestion':
+            case 'ms':
+            case 'suggestion':
+                if (sdk?.DataModel?.MapSuggestions) {
+                    if (isSolve) {
+                        sdk.DataModel.MapSuggestions.accept({ suggestionId: id });
+                    } else {
+                        sdk.DataModel.MapSuggestions.reject({ suggestionId: id });
+                    }
+                } else if (W?.model?.mapSuggestions) {
+                    const ms = W.model.mapSuggestions.getObjectById(id) || W.model.mapSuggestions.objects[id];
+                    if (ms) {
+                        if (isSolve) ms.accept();
+                        else ms.reject();
+                    }
+                }
+                break;
 
-        // 2. Place Update Requests (PUR)
-        if (findAndClickButton(['reject', 'deny'], '.venue-update-request, [class*="venue-update"], [data-testid*="pur"]')) {
-            return;
-        }
-
-        // 3. Map Suggestions (MS)
-        if (findAndClickButton(['reject', 'dismiss', 'ignore'], '.suggestion-detail, [class*="suggestion"], [class*="map-suggestion"]')) {
-            return;
-        }
-
-        // 4. Fallback Generic Button Search for MP/PUR/MS
-        if (findAndClickButton(['not applicable', 'reject', 'dismiss'])) {
-            return;
-        }
-
-        // 5. Update Requests (UR) via WME SDK
-        if (currentURId && sdk?.DataModel?.MapUpdateRequests) {
-            try {
-                sdk.DataModel.MapUpdateRequests.updateResolutionState({
-                    mapUpdateRequestId: currentURId,
-                    resolutionState: 'not-identified',
-                });
-            } catch (e) {
-                console.error(`[${SCRIPT_NAME}] Failed to mark UR as not identified:`, e);
-            }
+            default:
+                console.debug(`[${SCRIPT_NAME}] Unsupported object type: ${type}`);
+                break;
         }
     }
 
@@ -254,14 +273,14 @@
             shortcutId: SHORTCUT_IDS.solve,
             description: "Solve MP / UR / PUR / MS",
             shortcutKeys: DEFAULT_SHORTCUTS.solve,
-            callback: handleUnifiedSolve,
+            callback: () => handleUnifiedAction('solve'),
         });
 
         registerShortcut({
             shortcutId: SHORTCUT_IDS.notApplicable,
             description: "Not Applicable / Reject MP / UR / PUR / MS",
             shortcutKeys: DEFAULT_SHORTCUTS.notApplicable,
-            callback: handleUnifiedNotApplicable,
+            callback: () => handleUnifiedAction('notApplicable'),
         });
     }
 
@@ -283,19 +302,30 @@
         observer.observe(targetNode, { childList: true, subtree: true });
         scanForOneNetworkLinks();
 
+        // Register SDK Events to track active selection across all feed types
         if (sdk?.Events) {
             sdk.Events.on({
                 eventName: 'wme-update-request-panel-opened',
                 eventHandler: function (e) {
-                    currentURId = e.updateRequestId ?? null;
+                    currentActiveSelection = { type: 'mapUpdateRequest', id: e.updateRequestId ?? null };
                 },
             });
+
             sdk.Events.on({
                 eventName: 'wme-selection-changed',
                 eventHandler: function () {
-                    const sel = sdk.Editing?.getSelection?.();
-                    if (!sel || sel.objectType !== 'mapUpdateRequest') {
-                        currentURId = null;
+                    try {
+                        const sel = sdk.Editing?.getSelection?.();
+                        if (sel && sel.ids?.length > 0) {
+                            currentActiveSelection = {
+                                type: sel.objectType,
+                                id: sel.ids[0]
+                            };
+                        } else {
+                            currentActiveSelection = { type: null, id: null };
+                        }
+                    } catch (e) {
+                        currentActiveSelection = { type: null, id: null };
                     }
                 },
             });
@@ -315,7 +345,9 @@
 
             if (typeof initWmeSdkPlus === "function") {
                 try {
-                    const sdkPlus = await initWmeSdkPlus(wmeSdk);
+                    const sdkPlus = await initWmeSdkPlus(wmeSdk, {
+                        hooks: ["DataModel.MapProblems", "DataModel.VenueUpdateRequests", "DataModel.MapSuggestions"]
+                    });
                     if (sdkPlus) sdk = sdkPlus;
                 } catch (e) {
                     console.warn(`[${SCRIPT_NAME}] wme-sdk-plus init skipped:`, e);
