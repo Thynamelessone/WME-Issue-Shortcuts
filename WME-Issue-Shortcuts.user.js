@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Issue Shortcuts
 // @namespace    https://github.com/
-// @version      1.0.1-beta.2
+// @version      1.0.1-beta.3
 // @description  Creates links for one.network URLs on MPs and adds keyboard shortcuts for MPs, URs, PURs, and MS.
 // @author       Thynamelessone
 // @match        https://www.waze.com/*editor*
@@ -270,20 +270,54 @@
         }
     }
 
+    const SHORTCUT_STORAGE_KEY = `${SCRIPT_ID}-saved-shortcuts`;
+
+    function getStoredShortcutKeys() {
+        try {
+            return JSON.parse(localStorage.getItem(SHORTCUT_STORAGE_KEY)) ?? {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function saveShortcutKeys() {
+        if (!sdk?.Shortcuts?.getAllShortcuts) return;
+        try {
+            const currentShortcuts = sdk.Shortcuts.getAllShortcuts();
+            const savedState = {};
+
+            currentShortcuts.forEach(sc => {
+                if (sc.shortcutId && sc.shortcutId.startsWith(SCRIPT_ID)) {
+                    savedState[sc.shortcutId] = sc.shortcutKeys;
+                }
+            });
+
+            localStorage.setItem(SHORTCUT_STORAGE_KEY, JSON.stringify(savedState));
+        } catch (e) {
+            console.error(`[${SCRIPT_NAME}] Failed to save shortcuts to localStorage:`, e);
+        }
+    }
+
     function registerKeyboardShortcuts() {
+        const storedKeys = getStoredShortcutKeys();
+
         registerShortcut({
             shortcutId: SHORTCUT_IDS.solve,
             description: "Solve MP / UR / PUR / MS",
-            shortcutKeys: DEFAULT_SHORTCUTS.solve,
+            shortcutKeys: storedKeys[SHORTCUT_IDS.solve] ?? DEFAULT_SHORTCUTS.solve,
             callback: () => handleUnifiedAction('solve'),
         });
 
         registerShortcut({
             shortcutId: SHORTCUT_IDS.notApplicable,
             description: "Not Applicable / Reject MP / UR / PUR / MS",
-            shortcutKeys: DEFAULT_SHORTCUTS.notApplicable,
+            shortcutKeys: storedKeys[SHORTCUT_IDS.notApplicable] ?? DEFAULT_SHORTCUTS.notApplicable,
             callback: () => handleUnifiedAction('notApplicable'),
         });
+
+        // Save key bindings whenever the page unloads or hides
+        window.addEventListener('beforeunload', saveShortcutKeys);
+        window.addEventListener('pagehide', saveShortcutKeys);
     }
 
     function watchDOMAndEvents() {
