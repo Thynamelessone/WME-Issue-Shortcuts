@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Issue Shortcuts
 // @namespace    https://github.com/
-// @version      1.0.1-beta.5
+// @version      1.0.1-beta.6
 // @description  Creates links for one.network URLs on MPs and adds keyboard shortcuts for MPs, URs, PURs, and MS.
 // @author       Thynamelessone
 // @match        https://www.waze.com/*editor*
@@ -132,61 +132,50 @@
         selectors.forEach(processContainer);
     }
 
-    function detectActiveMapProblem() {
-        const mpContainer = document.querySelector('.problem-detail, .map-problem-detail, .modal-content');
-        if (!mpContainer) return null;
+    // Deep search through DOM and Shadow DOM roots for matching buttons
+    function findAndClickDeepButton(targetTexts) {
+        function searchRoot(root) {
+            if (!root) return null;
 
-        // Try extracting problem ID from dataset or internal element text
-        const idElem = Array.from(mpContainer.querySelectorAll('*')).find(el => {
-            const text = (el.textContent || '').trim();
-            return /^ID:\s*\d+/i.test(text) || /^Problem\s*#?\d+/i.test(text);
-        });
+            // Search buttons inside current root
+            const buttons = Array.from(root.querySelectorAll('button, .btn, wz-button'));
+            for (const btn of buttons) {
+                const txt = (btn.textContent || btn.innerText || '').trim().toLowerCase();
+                if (targetTexts.some(t => txt === t || (txt.length < 20 && txt.includes(t)))) {
+                    return btn;
+                }
+            }
 
-        if (idElem) {
-            const match = idElem.textContent.match(/\d+/);
-            if (match) return match[0];
+            // Traverse shadow DOMs
+            const allNodes = Array.from(root.querySelectorAll('*'));
+            for (const node of allNodes) {
+                if (node.shadowRoot) {
+                    const found = searchRoot(node.shadowRoot);
+                    if (found) return found;
+                }
+            }
+            return null;
         }
 
-        // Fallback: check if Solved / Not Applicable buttons exist in DOM
-        const hasButtons = Array.from(mpContainer.querySelectorAll('button, .btn, wz-button')).some(b => {
-            const txt = (b.textContent || '').trim().toLowerCase();
-            return txt === 'solved' || txt === 'solve' || txt === 'not applicable';
-        });
-
-        return hasButtons ? 'DOM_MP' : null;
+        const foundBtn = searchRoot(document);
+        if (foundBtn && typeof foundBtn.click === 'function') {
+            foundBtn.click();
+            return true;
+        }
+        return false;
     }
 
     function handleUnifiedAction(actionType) {
         const W = typeof window !== "undefined" ? window.W : undefined;
-        
-        // Priority 1: Check if a Map Problem dialog is open on screen
-        const openMPId = detectActiveMapProblem();
-        if (openMPId) {
-            const isSolve = actionType === 'solve';
-            
-            // Try SDK / Model resolution first if we have an ID
-            if (openMPId !== 'DOM_MP' && sdk?.DataModel?.MapProblems?.updateProblemState) {
-                sdk.DataModel.MapProblems.updateProblemState({
-                    problemId: openMPId,
-                    state: isSolve ? 'SOLVED' : 'NOT_APPLICABLE'
-                });
-                return;
-            }
+        const isSolve = actionType === 'solve';
 
-            // Click DOM buttons inside MP popup
-            const targetTexts = isSolve ? ['solved', 'solve'] : ['not applicable', 'not_applicable'];
-            const mpContainer = document.querySelector('.problem-detail, .map-problem-detail, .modal-content') || document;
-            const btn = Array.from(mpContainer.querySelectorAll('button, .btn, wz-button')).find(b => {
-                const txt = (b.textContent || b.innerText || '').trim().toLowerCase();
-                return targetTexts.some(t => txt === t);
-            });
-
-            if (btn && typeof btn.click === 'function') {
-                btn.click();
-                return;
-            }
+        // 1. Check if a Map Problem (MP) button exists on screen (including inside Shadow DOMs)
+        const mpTargetTexts = isSolve ? ['solved', 'solve'] : ['not applicable', 'not_applicable'];
+        if (findAndClickDeepButton(mpTargetTexts)) {
+            return;
         }
 
+        // 2. Handle active selection via SDK models (UR, PUR, MS)
         const { type, id } = currentActiveSelection;
 
         if (!type || !id) {
@@ -194,10 +183,8 @@
             return;
         }
 
-        const isSolve = actionType === 'solve';
-
         switch (type) {
-            // 1. Update Requests (UR)
+            // Update Requests (UR)
             case 'mapUpdateRequest':
             case 'ur':
                 if (sdk?.DataModel?.MapUpdateRequests) {
@@ -208,28 +195,7 @@
                 }
                 break;
 
-            // 2. Map Problems (MP)
-            case 'mapProblem':
-            case 'mp':
-            case 'problem':
-                if (sdk?.DataModel?.MapProblems?.updateProblemState) {
-                    sdk.DataModel.MapProblems.updateProblemState({
-                        problemId: id,
-                        state: isSolve ? 'SOLVED' : 'NOT_APPLICABLE'
-                    });
-                } else if (W?.model?.problems) {
-                    const problem = W.model.problems.getObjectById(id) || W.model.problems.objects[id];
-                    if (problem) {
-                        const req = typeof require === "function" ? require : window.require;
-                        let UpdateProblemState = W?.Action?.UpdateProblemState || (typeof req === "function" ? req("Waze/Action/UpdateProblemState") : null);
-                        if (UpdateProblemState) {
-                            W.model.actionManager.add(new UpdateProblemState(problem, isSolve ? 'SOLVED' : 'NOT_APPLICABLE'));
-                        }
-                    }
-                }
-                break;
-
-            // 3. Place Update Requests (PUR)
+            // Place Update Requests (PUR)
             case 'venueUpdateRequest':
             case 'pur':
                 if (sdk?.DataModel?.VenueUpdateRequests) {
@@ -247,7 +213,7 @@
                 }
                 break;
 
-            // 4. Map Suggestions (MS)
+            // Map Suggestions (MS)
             case 'mapSuggestion':
             case 'ms':
             case 'suggestion':
@@ -383,12 +349,6 @@
             }
             if (shouldScan) {
                 scanForOneNetworkLinks();
-
-                // If a Map Problem modal opened, reset active selection to MP
-                const mpId = detectActiveMapProblem();
-                if (mpId) {
-                    currentActiveSelection = { type: 'mapProblem', id: mpId };
-                }
             }
         });
 
@@ -396,7 +356,6 @@
         observer.observe(targetNode, { childList: true, subtree: true });
         scanForOneNetworkLinks();
 
-        // Register SDK Events to track active selection across all feed types
         if (sdk?.Events) {
             sdk.Events.on({
                 eventName: 'wme-update-request-panel-opened',
@@ -416,12 +375,7 @@
                                 id: sel.ids[0]
                             };
                         } else {
-                            const mpId = detectActiveMapProblem();
-                            if (mpId) {
-                                currentActiveSelection = { type: 'mapProblem', id: mpId };
-                            } else {
-                                currentActiveSelection = { type: null, id: null };
-                            }
+                            currentActiveSelection = { type: null, id: null };
                         }
                     } catch (e) {
                         currentActiveSelection = { type: null, id: null };
