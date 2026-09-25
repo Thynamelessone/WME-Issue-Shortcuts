@@ -45,6 +45,8 @@
     let sdk = null;
     let currentURId = null;
 
+    let currentActiveSelection = { type: null, id: null };
+
     function openInSharedTab(url) {
         if (!sharedWindowRef || sharedWindowRef.closed) {
             sharedWindowRef = window.open(url, TAB_TARGET_NAME);
