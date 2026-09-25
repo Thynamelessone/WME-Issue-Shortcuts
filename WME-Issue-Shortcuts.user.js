@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Issue Shortcuts
 // @namespace    https://github.com/
-// @version      1.0.1-beta.4
+// @version      1.0.1-beta.5
 // @description  Creates links for one.network URLs on MPs and adds keyboard shortcuts for MPs, URs, PURs, and MS.
 // @author       Thynamelessone
 // @match        https://www.waze.com/*editor*
@@ -132,8 +132,61 @@
         selectors.forEach(processContainer);
     }
 
+    function detectActiveMapProblem() {
+        const mpContainer = document.querySelector('.problem-detail, .map-problem-detail, .modal-content');
+        if (!mpContainer) return null;
+
+        // Try extracting problem ID from dataset or internal element text
+        const idElem = Array.from(mpContainer.querySelectorAll('*')).find(el => {
+            const text = (el.textContent || '').trim();
+            return /^ID:\s*\d+/i.test(text) || /^Problem\s*#?\d+/i.test(text);
+        });
+
+        if (idElem) {
+            const match = idElem.textContent.match(/\d+/);
+            if (match) return match[0];
+        }
+
+        // Fallback: check if Solved / Not Applicable buttons exist in DOM
+        const hasButtons = Array.from(mpContainer.querySelectorAll('button, .btn, wz-button')).some(b => {
+            const txt = (b.textContent || '').trim().toLowerCase();
+            return txt === 'solved' || txt === 'solve' || txt === 'not applicable';
+        });
+
+        return hasButtons ? 'DOM_MP' : null;
+    }
+
     function handleUnifiedAction(actionType) {
         const W = typeof window !== "undefined" ? window.W : undefined;
+        
+        // Priority 1: Check if a Map Problem dialog is open on screen
+        const openMPId = detectActiveMapProblem();
+        if (openMPId) {
+            const isSolve = actionType === 'solve';
+            
+            // Try SDK / Model resolution first if we have an ID
+            if (openMPId !== 'DOM_MP' && sdk?.DataModel?.MapProblems?.updateProblemState) {
+                sdk.DataModel.MapProblems.updateProblemState({
+                    problemId: openMPId,
+                    state: isSolve ? 'SOLVED' : 'NOT_APPLICABLE'
+                });
+                return;
+            }
+
+            // Click DOM buttons inside MP popup
+            const targetTexts = isSolve ? ['solved', 'solve'] : ['not applicable', 'not_applicable'];
+            const mpContainer = document.querySelector('.problem-detail, .map-problem-detail, .modal-content') || document;
+            const btn = Array.from(mpContainer.querySelectorAll('button, .btn, wz-button')).find(b => {
+                const txt = (b.textContent || b.innerText || '').trim().toLowerCase();
+                return targetTexts.some(t => txt === t);
+            });
+
+            if (btn && typeof btn.click === 'function') {
+                btn.click();
+                return;
+            }
+        }
+
         const { type, id } = currentActiveSelection;
 
         if (!type || !id) {
@@ -330,6 +383,12 @@
             }
             if (shouldScan) {
                 scanForOneNetworkLinks();
+
+                // If a Map Problem modal opened, reset active selection to MP
+                const mpId = detectActiveMapProblem();
+                if (mpId) {
+                    currentActiveSelection = { type: 'mapProblem', id: mpId };
+                }
             }
         });
 
@@ -357,7 +416,12 @@
                                 id: sel.ids[0]
                             };
                         } else {
-                            currentActiveSelection = { type: null, id: null };
+                            const mpId = detectActiveMapProblem();
+                            if (mpId) {
+                                currentActiveSelection = { type: 'mapProblem', id: mpId };
+                            } else {
+                                currentActiveSelection = { type: null, id: null };
+                            }
                         }
                     } catch (e) {
                         currentActiveSelection = { type: null, id: null };
