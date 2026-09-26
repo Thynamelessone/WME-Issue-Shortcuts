@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         WME MP Links
+// @name         WME Issue Links
 // @namespace    https://github.com/
-// @version      1.0.1-beta.8
-// @description  Creates links for one.network URLs on MPs.
+// @version      1.0.1-beta.9
+// @description  Creates clickable links for any web URLs found on MPs and issue panels.
 // @author       Thynamelessone
 // @match        https://www.waze.com/*editor*
 // @match        https://beta.waze.com/*editor*
@@ -19,25 +19,27 @@
 
     const SCRIPT_ID = "WME-MP-Links";
     const SCRIPT_NAME = "WME MP Links";
-    const updateMessage = ".";
+    const updateMessage = "";
 
     if (typeof WazeWrap !== 'undefined' && WazeWrap.Interface) {
         WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, GM_info.script.version, updateMessage);
     }
 
+    // Matches any valid http, https, or www link
     const URL_REGEX_TEST = /(?:https?:\/\/|www\.)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:\/[^\s<"'`;,]*)?/i;
     const URL_REGEX_MATCH = /(?:https?:\/\/|www\.)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:\/[^\s<"'`;,]*)?/gi;
 
-    const TAB_TARGET_NAME = 'wme_external_link_tab';
+    const TAB_TARGET_NAME = 'wme_shared_external_tab';
+
     let sharedWindowRef = null;
     let sdk = null;
 
     function openInSharedTab(url) {
-        const fullUrl = url.startsWith('www.') ? `https://${url}` : url;
+        const targetUrl = url.startsWith('www.') ? `https://${url}` : url;
         if (!sharedWindowRef || sharedWindowRef.closed) {
-            sharedWindowRef = window.open(fullUrl, TAB_TARGET_NAME);
+            sharedWindowRef = window.open(targetUrl, TAB_TARGET_NAME);
         } else {
-            sharedWindowRef.location.href = fullUrl;
+            sharedWindowRef.location.href = targetUrl;
             sharedWindowRef.focus();
         }
     }
@@ -52,11 +54,7 @@
         }
 
         const parent = node.parentNode;
-        if (
-            !parent ||
-            ['A', 'SCRIPT', 'STYLE', 'INPUT', 'TEXTAREA', 'NOSCRIPT'].includes(parent.tagName) ||
-            parent.dataset.wmeLinkified === "true"
-        ) {
+        if (!parent || ['A', 'SCRIPT', 'STYLE', 'INPUT', 'TEXTAREA'].includes(parent.tagName)) {
             return;
         }
 
@@ -70,8 +68,7 @@
             }
 
             const anchor = document.createElement('a');
-            const href = match.startsWith('www.') ? `https://${match}` : match;
-            anchor.href = href;
+            anchor.href = match.startsWith('www.') ? `https://${match}` : match;
             anchor.innerText = match;
             anchor.style.color = '#33a3dc';
             anchor.style.textDecoration = 'underline';
@@ -92,49 +89,37 @@
             fragment.appendChild(document.createTextNode(text.slice(lastIdx)));
         }
 
-        parent.dataset.wmeLinkified = "true";
         parent.replaceChild(fragment, node);
     }
 
-    function scanRootForLinks(root) {
-        if (!root) return;
-
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
-        const nodes = [];
-        while (walker.nextNode()) {
-            nodes.push(walker.currentNode);
-        }
-        nodes.forEach(linkifyNode);
-
-        const elements = root.querySelectorAll ? root.querySelectorAll('*') : [];
-        for (const el of elements) {
-            if (el.shadowRoot) {
-                scanRootForLinks(el.shadowRoot);
+    function processContainer(selector) {
+        const containers = document.querySelectorAll(selector);
+        containers.forEach(container => {
+            const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
+            const nodes = [];
+            while (walker.nextNode()) {
+                nodes.push(walker.currentNode);
             }
-        }
+            nodes.forEach(linkifyNode);
+        });
     }
 
-    let scanTimeout = null;
-    function triggerScan() {
-        if (scanTimeout) clearTimeout(scanTimeout);
-        scanTimeout = setTimeout(() => {
-            const targets = [
-                document.getElementById('sidebarContent'),
-                document.getElementById('edit-panel'),
-                document.querySelector('.problem-detail'),
-                document.querySelector('.map-problem-detail'),
-                document.querySelector('.modal-content'),
-            ].filter(Boolean);
+    function scanForLinks() {
+        const selectors = [
+            '#sidebarContent',
+            '.problem-detail',
+            '.map-problem-detail',
+            '.modal-content',
+            '.edit-panel',
+            '.closure-detail',
+            'div[class*="problem"]',
+            'div[class*="panel"]'
+        ];
 
-            if (targets.length > 0) {
-                targets.forEach(scanRootForLinks);
-            } else {
-                scanRootForLinks(document.body);
-            }
-        }, 200);
+        selectors.forEach(processContainer);
     }
 
-    function setupObserver() {
+    function watchDOM() {
         const observer = new MutationObserver((mutations) => {
             let shouldScan = false;
             for (const mutation of mutations) {
@@ -143,15 +128,14 @@
                     break;
                 }
             }
-            if (shouldScan) triggerScan();
+            if (shouldScan) {
+                scanForLinks();
+            }
         });
 
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
-
-        triggerScan();
+        const targetNode = document.getElementById('app-container') || document.body;
+        observer.observe(targetNode, { childList: true, subtree: true });
+        scanForLinks();
     }
 
     async function initialise() {
@@ -176,7 +160,8 @@
                 }
             }
 
-            setupObserver();
+            watchDOM();
+
             console.log(`[${SCRIPT_NAME}] Initialisation complete.`);
         } catch (error) {
             console.error(`[${SCRIPT_NAME}] Initialisation failed.`, error);
