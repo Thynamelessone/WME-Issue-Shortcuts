@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME MP Links
 // @namespace    https://github.com/
-// @version      1.0.1-beta.7
+// @version      1.0.1-beta.8
 // @description  Creates links for one.network URLs on MPs.
 // @author       Thynamelessone
 // @match        https://www.waze.com/*editor*
@@ -19,40 +19,25 @@
 
     const SCRIPT_ID = "WME-MP-Links";
     const SCRIPT_NAME = "WME MP Links";
-    const updateMessage = "";
+    const updateMessage = ".";
 
     if (typeof WazeWrap !== 'undefined' && WazeWrap.Interface) {
         WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, GM_info.script.version, updateMessage);
     }
 
-    const SHORTCUT_GROUP_ID = `${SCRIPT_ID}-shortcuts`;
+    const URL_REGEX_TEST = /(?:https?:\/\/|www\.)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:\/[^\s<"'`;,]*)?/i;
+    const URL_REGEX_MATCH = /(?:https?:\/\/|www\.)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:\/[^\s<"'`;,]*)?/gi;
 
-    const SHORTCUT_IDS = {
-        solve: `${SCRIPT_ID}-solve-action`,
-        notApplicable: `${SCRIPT_ID}-not-applicable-action`,
-    };
-    
-    const DEFAULT_SHORTCUTS = {
-        solve: null,
-        notApplicable: null,
-    };
-
-    const URL_REGEX_TEST = /https?:\/\/(?:[a-zA-Z0-9-]+\.)?one\.network\/[^\s<"'`;,]+/i;
-    const URL_REGEX_MATCH = /https?:\/\/(?:[a-zA-Z0-9-]+\.)?one\.network\/[^\s<"'`;,]+/gi;
-
-    const TAB_TARGET_NAME = 'one_network_shared_tab';
-    const SHORTCUT_STORAGE_KEY = `${SCRIPT_ID}-saved-shortcuts`;
-
+    const TAB_TARGET_NAME = 'wme_external_link_tab';
     let sharedWindowRef = null;
     let sdk = null;
 
-    let currentActiveSelection = { type: null, id: null };
-
     function openInSharedTab(url) {
+        const fullUrl = url.startsWith('www.') ? `https://${url}` : url;
         if (!sharedWindowRef || sharedWindowRef.closed) {
-            sharedWindowRef = window.open(url, TAB_TARGET_NAME);
+            sharedWindowRef = window.open(fullUrl, TAB_TARGET_NAME);
         } else {
-            sharedWindowRef.location.href = url;
+            sharedWindowRef.location.href = fullUrl;
             sharedWindowRef.focus();
         }
     }
@@ -67,7 +52,11 @@
         }
 
         const parent = node.parentNode;
-        if (!parent || ['A', 'SCRIPT', 'STYLE', 'INPUT', 'TEXTAREA'].includes(parent.tagName)) {
+        if (
+            !parent ||
+            ['A', 'SCRIPT', 'STYLE', 'INPUT', 'TEXTAREA', 'NOSCRIPT'].includes(parent.tagName) ||
+            parent.dataset.wmeLinkified === "true"
+        ) {
             return;
         }
 
@@ -81,7 +70,8 @@
             }
 
             const anchor = document.createElement('a');
-            anchor.href = match;
+            const href = match.startsWith('www.') ? `https://${match}` : match;
+            anchor.href = href;
             anchor.innerText = match;
             anchor.style.color = '#33a3dc';
             anchor.style.textDecoration = 'underline';
@@ -102,67 +92,66 @@
             fragment.appendChild(document.createTextNode(text.slice(lastIdx)));
         }
 
+        parent.dataset.wmeLinkified = "true";
         parent.replaceChild(fragment, node);
     }
 
-    function processContainer(selector) {
-        const containers = document.querySelectorAll(selector);
-        containers.forEach(container => {
-            const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
-            const nodes = [];
-            while (walker.nextNode()) {
-                nodes.push(walker.currentNode);
+    function scanRootForLinks(root) {
+        if (!root) return;
+
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+        const nodes = [];
+        while (walker.nextNode()) {
+            nodes.push(walker.currentNode);
+        }
+        nodes.forEach(linkifyNode);
+
+        const elements = root.querySelectorAll ? root.querySelectorAll('*') : [];
+        for (const el of elements) {
+            if (el.shadowRoot) {
+                scanRootForLinks(el.shadowRoot);
             }
-            nodes.forEach(linkifyNode);
+        }
+    }
+
+    let scanTimeout = null;
+    function triggerScan() {
+        if (scanTimeout) clearTimeout(scanTimeout);
+        scanTimeout = setTimeout(() => {
+            const targets = [
+                document.getElementById('sidebarContent'),
+                document.getElementById('edit-panel'),
+                document.querySelector('.problem-detail'),
+                document.querySelector('.map-problem-detail'),
+                document.querySelector('.modal-content'),
+            ].filter(Boolean);
+
+            if (targets.length > 0) {
+                targets.forEach(scanRootForLinks);
+            } else {
+                scanRootForLinks(document.body);
+            }
+        }, 200);
+    }
+
+    function setupObserver() {
+        const observer = new MutationObserver((mutations) => {
+            let shouldScan = false;
+            for (const mutation of mutations) {
+                if (mutation.addedNodes.length > 0) {
+                    shouldScan = true;
+                    break;
+                }
+            }
+            if (shouldScan) triggerScan();
         });
-    }
 
-    function scanForOneNetworkLinks() {
-        const selectors = [
-            '#sidebarContent',
-            '.problem-detail',
-            '.map-problem-detail',
-            '.modal-content',
-            '.edit-panel',
-            '.closure-detail',
-            'div[class*="problem"]',
-            'div[class*="panel"]'
-        ];
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
 
-        selectors.forEach(processContainer);
-    }
-
-    // Deep search through DOM and Shadow DOM roots for matching buttons
-    function findAndClickDeepButton(targetTexts) {
-        function searchRoot(root) {
-            if (!root) return null;
-
-            // Search buttons inside current root
-            const buttons = Array.from(root.querySelectorAll('button, .btn, wz-button'));
-            for (const btn of buttons) {
-                const txt = (btn.textContent || btn.innerText || '').trim().toLowerCase();
-                if (targetTexts.some(t => txt === t || (txt.length < 20 && txt.includes(t)))) {
-                    return btn;
-                }
-            }
-
-            // Traverse shadow DOMs
-            const allNodes = Array.from(root.querySelectorAll('*'));
-            for (const node of allNodes) {
-                if (node.shadowRoot) {
-                    const found = searchRoot(node.shadowRoot);
-                    if (found) return found;
-                }
-            }
-            return null;
-        }
-
-        const foundBtn = searchRoot(document);
-        if (foundBtn && typeof foundBtn.click === 'function') {
-            foundBtn.click();
-            return true;
-        }
-        return false;
+        triggerScan();
     }
 
     async function initialise() {
@@ -186,6 +175,8 @@
                     console.warn(`[${SCRIPT_NAME}] wme-sdk-plus init skipped:`, e);
                 }
             }
+
+            setupObserver();
             console.log(`[${SCRIPT_NAME}] Initialisation complete.`);
         } catch (error) {
             console.error(`[${SCRIPT_NAME}] Initialisation failed.`, error);
